@@ -62,13 +62,99 @@ import math
 import time
 import pickle
 import numpy as np
-import nibabel as nib
 import tensorflow as tf
 import keras.layers as KL
 import keras.backend as K
 from datetime import timedelta
 from scipy.ndimage.morphology import distance_transform_edt
 
+
+try:
+    from minc2_simple import minc2_file,minc2_dim
+    have_minc2_simple=True
+    print("Have minc2_simple")
+except ImportError:
+    # minc2_simple not available :(
+    have_minc2_simple=False
+
+try:
+    import nibabel as nib
+    have_nibabel=True
+    print("Have nibabel")
+except ImportError:
+    # nibabel not available :(
+    have_nibabel=False
+
+
+# ----------------------------------------------- minc io functions  --------------------------------------------------
+def hdr_to_affine(hdr):
+    rot=np.zeros((3,3))
+    scales=np.zeros((3,3))
+    start=np.zeros(3)
+    ax = np.array([hdr[j].id for j in range(3)])
+
+    for i in range(3):
+        aa=np.where(ax == (i+1))[0][0] # HACK, assumes DIM_X=1,DIM_Y=2 etc
+        if hdr[aa].have_dir_cos:
+            rot[i,:] = hdr[aa].dir_cos
+        else:
+            rot[i,i] = 1
+
+        scales[i,i] = hdr[aa].step
+        start[i] = hdr[aa].start
+    origin = start@rot
+    out=np.eye(4)
+
+    out[0:3,0:3] = (scales.T*rot).T
+    out[0:3,3] = origin
+    return out
+
+
+def decompose(aff):
+    (u,s,vh) = np.linalg.svd(aff[0:3,0:3])
+    # remove scaling
+    dir_cos = u @ vh
+    step  = np.diag(aff[0:3,0:3] @ np.linalg.inv(dir_cos))
+    start = (aff[0:3,3].T @ np.linalg.inv(dir_cos)).T
+    return start, step, dir_cos
+
+def affine_to_dims(aff, shape):
+    start, step, dir_cos = decompose(aff)
+    dims=[
+        minc2_dim(id=i+1, length=shape[2-i], start=start[i], step=step[i], have_dir_cos=True, dir_cos=dir_cos[i,0:3]) for i in range(3)
+    ]
+    return dims
+
+def load_minc_volume(fn,dtype=np.dtype('float64')):
+    m=minc2_file(fn)
+    m.setup_standard_order()
+    data=m.load_complete_volume(dtype).transpose([2,1,0]).copy()
+    aff=hdr_to_affine(m.representation_dims())
+
+    # need to transpose to be compatible with nibabel
+    return data,aff
+
+def save_minc_volume(fn, data, aff, dtype=np.dtype('int32')):
+    data_=data.transpose([2,1,0]).copy()
+    dims=affine_to_dims(aff, data_.shape)
+
+    out=minc2_file()
+
+    if dtype is not None:
+        dtype=np.dtype('int32')
+
+    if dtype == np.dtype('int32') or dtype==np.dtype('int64') or dtype=='int32' or dtype=='int64':
+        data_ = np.round(data_)
+        data_ = data_.astype(dtype=dtype)
+        out.define(dims, minc2_file.MINC2_USHORT, minc2_file.MINC2_UINT)
+    else:
+        data_ = data_.astype(dtype=np.float32)
+        out.define(dims, minc2_file.MINC2_FLOAT, minc2_file.FLOAT)
+
+    out.create(fn)
+    #out.copy_metadata(ref)
+    out.setup_standard_order()
+    out.save_complete_volume(data_)
 
 # ---------------------------------------------- loading/saving functions ----------------------------------------------
 
@@ -86,9 +172,12 @@ def load_volume(path_volume, im_only=True, squeeze=True, dtype=None, aff_ref=Non
     The returned affine matrix is also given in this new space. Must be a numpy array of dimension 4x4.
     :return: the volume, with corresponding affine matrix and header if im_only is False.
     """
-    assert path_volume.endswith(('.nii', '.nii.gz', '.mgz', '.npz')), 'Unknown data file: %s' % path_volume
+    assert path_volume.endswith(('.nii', '.nii.gz', '.mgz', '.npz', '.mnc', '.mnc.gz')), 'Unknown data file: %s' % path_volume
 
-    if path_volume.endswith(('.nii', '.nii.gz', '.mgz')):
+    if have_minc2_simple and path_volume.endswith(('.mnc', '.mnc.gz')):
+        volume, aff = load_minc_volume(path_volume)
+        header = path_volume
+    elif have_nibabel and path_volume.endswith(('.nii', '.nii.gz', '.mgz')):
         x = nib.load(path_volume)
         if squeeze:
             volume = np.squeeze(x.get_fdata())
@@ -136,7 +225,9 @@ def save_volume(volume, aff, header, path, res=None, dtype=None, n_dims=3):
     mkdir(os.path.dirname(path))
     if '.npz' in path:
         np.savez_compressed(path, vol_data=volume)
-    else:
+    elif have_minc2_simple and '.mnc' in path:
+        save_minc_volume(path, volume, aff, dtype=dtype)
+    elif have_nibabel:
         if header is None:
             header = nib.Nifti1Header()
         if isinstance(aff, str):
@@ -156,6 +247,8 @@ def save_volume(volume, aff, header, path, res=None, dtype=None, n_dims=3):
             res = reformat_to_list(res, length=n_dims, dtype=None)
             nifty.header.set_zooms(res)
         nib.save(nifty, path)
+    else:
+        raise Exception("Output file type is not supported, check if nibabel or minc2-simple is needed %s"%(path))
 
 
 def get_volume_info(path_volume, return_volume=False, aff_ref=None, max_channels=10):
@@ -222,7 +315,7 @@ def get_list_labels(label_list=None, labels_dir=None, save_label_list=None, FS_s
 
     # load label list if previously computed
     if label_list is not None:
-        label_list = np.array(reformat_to_list(label_list, load_as_numpy=True, dtype='int'))
+        label_list = np.array(reformat_to_list(label_list, load_as_numpy=True, dtype=np.int32))
 
     # compute label list from all label files
     elif labels_dir is not None:
@@ -330,7 +423,7 @@ def reformat_to_list(var, length=None, load_as_numpy=False, dtype=None):
     if var is None:
         return None
     var = load_array_if_path(var, load_as_numpy=load_as_numpy)
-    if isinstance(var, (int, float, np.int, np.int32, np.int64, np.float, np.float32, np.float64)):
+    if isinstance(var, (int, float, np.int32, np.int64, np.float32, np.float64)):
         var = [var]
     elif isinstance(var, tuple):
         var = list(var)
@@ -355,9 +448,9 @@ def reformat_to_list(var, length=None, load_as_numpy=False, dtype=None):
 
     # convert items type
     if dtype is not None:
-        if dtype == 'int':
+        if dtype == 'int' or dtype == np.int32  or dtype == np.int64 :
             var = [int(v) for v in var]
-        elif dtype == 'float':
+        elif dtype == 'float' or dtype == np.float32 or dtype == np.float64:
             var = [float(v) for v in var]
         elif dtype == 'bool':
             var = [bool(v) for v in var]

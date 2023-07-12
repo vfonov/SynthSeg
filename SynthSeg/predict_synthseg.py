@@ -318,7 +318,7 @@ def prepare_output_files(path_images, out_seg, out_posteriors, out_resampled, ou
         # define helper to deal with outputs
         def text_helper(path, name):
             if path is not None:
-                assert path[-4:] == '.txt', 'if path_images given as text file, so must be %s' % name
+                assert path[-4:] == '.txt', 'if path_images given as text file, so must be %s, got %s' % (name,path[-4:])
                 with open(path, 'r') as ff:
                     path = [line.replace('\n', '') for line in ff.readlines() if line != '\n']
                 recompute_files = [not os.path.isfile(p) for p in path]
@@ -336,11 +336,11 @@ def prepare_output_files(path_images, out_seg, out_posteriors, out_resampled, ou
         out_qc, recompute_qc, unique_qc_file = text_helper(out_qc, 'path_qc_scores')
 
     # path_images is a folder
-    elif ('.nii.gz' not in basename) & ('.nii' not in basename) & ('.mgz' not in basename) & ('.npz' not in basename):
+    elif ('.nii.gz' not in basename) & ('.nii' not in basename) & ('.mgz' not in basename) & ('.npz' not in basename) & ('.mnc' not in basename) & ('.mnc.gz' not in basename):
 
         # input images
         if os.path.isfile(path_images):
-            raise Exception('Extension not supported for %s, only use: nii.gz, .nii, .mgz, or .npz' % path_images)
+            raise Exception('Extension not supported for %s, only use: nii.gz, .nii, .mgz, .mnc, .mnc.gz or .npz' % path_images)
         path_images = utils.list_images_in_folder(path_images)
 
         # define helper to deal with outputs
@@ -356,12 +356,13 @@ def prepare_output_files(path_images, out_seg, out_posteriors, out_resampled, ou
                     recompute_files = [True] * len(path_images)
                     unique_file = True
                 else:
-                    if (path[-7:] == '.nii.gz') | (path[-4:] == '.nii') | (path[-4:] == '.mgz') | (path[-4:] == '.npz'):
+                    if (path[-7:] == '.nii.gz') | (path[-4:] == '.nii') | (path[-4:] == '.mgz') | (path[-4:] == '.npz') | (path[-4:] == '.mnc'):
                         raise Exception('Output FOLDER had a FILE extension' % path)
                     path = [os.path.join(path, os.path.basename(p)) for p in path_images]
                     path = [p.replace('.nii', '_%s.nii' % suffix) for p in path]
                     path = [p.replace('.mgz', '_%s.mgz' % suffix) for p in path]
                     path = [p.replace('.npz', '_%s.npz' % suffix) for p in path]
+                    path = [p.replace('.mnc', '_%s.mnc' % suffix) for p in path]
                     recompute_files = [not os.path.isfile(p) for p in path]
                 utils.mkdir(os.path.dirname(path[0]))
             else:
@@ -396,10 +397,11 @@ def prepare_output_files(path_images, out_seg, out_posteriors, out_resampled, ou
                     recompute_files = [True]
                     unique_file = True
                 else:
-                    if ('.nii.gz' not in path) & ('.nii' not in path) & ('.mgz' not in path) & ('.npz' not in path):
+                    if ('.nii.gz' not in path) & ('.nii' not in path) & ('.mgz' not in path) & ('.npz' not in path) & ('.mnc' not in path):
                         file_name = os.path.basename(path_images[0]).replace('.nii', '_%s.nii' % suffix)
                         file_name = file_name.replace('.mgz', '_%s.mgz' % suffix)
                         file_name = file_name.replace('.npz', '_%s.npz' % suffix)
+                        file_name = file_name.replace('.mnc', '_%s.mnc' % suffix)
                         path = os.path.join(path, file_name)
                     recompute_files = [not os.path.isfile(path)]
                 utils.mkdir(os.path.dirname(path))
@@ -497,7 +499,7 @@ def build_model(path_model_segmentation,
                 do_parcellation,
                 do_qc):
 
-    assert os.path.isfile(path_model_segmentation), "The provided model path does not exist."
+    assert os.path.isfile(path_model_segmentation), f"The provided model {path_model_segmentation} path does not exist."
 
     # get labels
     n_labels_seg = len(labels_segmentation)
